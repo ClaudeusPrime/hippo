@@ -40,6 +40,22 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .mode-btn:not(.active):hover{color:var(--text);background:var(--bg3)}
 #dark-toggle{background:none;border:1px solid var(--border);color:var(--text-faint);padding:5px 9px;border-radius:3px;cursor:pointer;font-size:13px;line-height:1;flex-shrink:0;transition:color .15s,border-color .15s}
 #dark-toggle:hover{color:var(--text);border-color:var(--gold-dim)}
+#search-wrap{display:flex;align-items:center;position:relative;flex-shrink:0}
+#search-input{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 28px 6px 12px;font-size:12px;font-family:'Inter',sans-serif;border-radius:3px;width:160px;outline:none;transition:border-color .15s}
+#search-input:focus{border-color:var(--gold-dim)}
+#search-input::placeholder{color:var(--text-faint)}
+#search-clear{display:none;position:absolute;right:6px;background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:13px;line-height:1;padding:0;width:16px;height:16px;align-items:center;justify-content:center}
+#search-clear:hover{color:var(--text)}
+#search-clear.visible{display:flex}
+#search-results{position:absolute;top:100%;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-top:none;border-radius:0 0 4px 4px;max-height:320px;overflow-y:auto;z-index:200;display:none;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+#search-results.open{display:block}
+.sr-item{padding:8px 14px;cursor:pointer;border-bottom:1px solid var(--border)}
+.sr-item:last-child{border-bottom:none}
+.sr-item:hover{background:var(--bg3)}
+.sr-ref{font-size:11px;color:var(--gold);letter-spacing:.04em;margin-bottom:3px}
+.sr-snippet{font-family:'Noto Serif',serif;font-size:13px;color:var(--text-dim);line-height:1.5}
+.sr-snippet mark{background:rgba(201,168,76,.2);color:var(--gold);border-radius:2px;padding:0 2px}
+.sr-none{padding:12px 14px;color:var(--text-faint);font-size:12px}
 #reading-pane{flex:1;overflow-y:auto;padding:28px 44px 64px}
 .chapter-title{font-family:'Noto Serif Display',serif;font-size:13px;text-transform:uppercase;letter-spacing:.18em;color:var(--text-faint);margin-bottom:24px}
 .latin-heading{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:var(--gold-dim);margin-bottom:6px;font-family:'Inter',sans-serif}
@@ -101,6 +117,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   #reading-pane{padding:16px 18px 120px}
   .para{font-size:16px}
   #dark-toggle{margin-right:6px}
+  #search-input{width:110px}
   .mode-btn{padding:5px 8px;font-size:10px}
   .iw-eng{font-size:14px}
 }
@@ -135,6 +152,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <div id="mode-toggle">
         <button id="btn-english" class="mode-btn active" onclick="setMode('english')">English</button>
         <button id="btn-interlinear" class="mode-btn" onclick="setMode('interlinear')">Interlinear</button>
+      </div>
+      <div id="search-wrap">
+        <input id="search-input" type="text" placeholder="Search…" autocomplete="off" aria-label="Search">
+        <button id="search-clear" title="Clear" onclick="clearSearch()">✕</button>
+        <div id="search-results"></div>
       </div>
       <button id="dark-toggle" onclick="toggleDark()" aria-label="Toggle dark mode" title="Toggle dark mode">☾</button>
     </div>
@@ -324,6 +346,13 @@ function buildChapterNav(bookId, ch, total) {
 
 // ── WORD SELECTION ─────────────────────────────────────────────────────────
 function selectWord(el) {
+  // Toggle off if clicking the already-selected word
+  if (selectedWordEl === el) {
+    el.classList.remove('selected');
+    selectedWordEl = null;
+    resetDetail();
+    return;
+  }
   if (selectedWordEl) selectedWordEl.classList.remove('selected');
   selectedWordEl = el;
   el.classList.add('selected');
@@ -366,6 +395,97 @@ function setMode(mode) {
   document.getElementById('btn-english').classList.toggle('active', mode === 'english');
   document.getElementById('btn-interlinear').classList.toggle('active', mode === 'interlinear');
   if (currentBook && currentChapter) loadChapter(currentBook, currentChapter);
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────
+function setupSearch() {
+  var inp = document.getElementById('search-input');
+  var results = document.getElementById('search-results');
+  var clear = document.getElementById('search-clear');
+  var t;
+
+  inp.addEventListener('input', function() {
+    clear.classList.toggle('visible', inp.value.length > 0);
+    clearTimeout(t);
+    t = setTimeout(function() {
+      var q = inp.value.trim().toLowerCase();
+      if (q.length < 2) { results.classList.remove('open'); return; }
+      doSearch(q);
+    }, 250);
+  });
+
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') clearSearch();
+  });
+
+  // Close on outside click
+  document.addEventListener('click', function(e) {
+    if (!document.getElementById('search-wrap').contains(e.target))
+      results.classList.remove('open');
+  });
+}
+
+function doSearch(q) {
+  var results = document.getElementById('search-results');
+  // Search the loaded book cache
+  var hits = [];
+  Object.keys(bookCache).forEach(function(bookId) {
+    var bookData = bookCache[bookId];
+    if (!bookData) return;
+    Object.keys(bookData).forEach(function(key) {
+      var ch = bookData[key];
+      ch.sections.forEach(function(sec) {
+        // Build plain text from english words
+        var text = sec.english.map(function(w) {
+          return typeof w === 'string' ? w : w.w;
+        }).join(' ');
+        if (text.toLowerCase().indexOf(q) > -1) {
+          hits.push({ key: key, title: ch.title, text: text, latin: sec.latin });
+        }
+      });
+    });
+  });
+
+  if (hits.length === 0) {
+    results.innerHTML = '<div class="sr-none">No results in loaded books. Open more books to search them.</div>';
+    results.classList.add('open');
+    return;
+  }
+
+  // Limit to 20
+  var showing = hits.slice(0, 20);
+  var html = '';
+  showing.forEach(function(hit) {
+    var parts = hit.key.split('-');
+    var book = BOOKS.find(function(b){ return b.id == parts[0]; });
+    var label = (book ? book.title : 'Book ' + parts[0]) + ' · Ch. ' + parts[1];
+    // Highlight match in snippet
+    var snippet = hit.text.slice(0, 120);
+    var re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\]/g,'\$&') + ')', 'gi');
+    snippet = snippet.replace(re, '<mark>$1</mark>');
+    html += '<div class="sr-item" onclick="goToResult('' + hit.key + '')">' +
+      '<div class="sr-ref">' + label + '</div>' +
+      '<div class="sr-snippet">' + snippet + '</div>' +
+      '</div>';
+  });
+  if (hits.length > 20) html += '<div class="sr-none">Showing 20 of ' + hits.length + ' results.</div>';
+  results.innerHTML = html;
+  results.classList.add('open');
+}
+
+function goToResult(key) {
+  var parts = key.split('-');
+  loadChapter(parseInt(parts[0]), parseInt(parts[1]));
+  document.getElementById('search-results').classList.remove('open');
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-clear').classList.remove('visible');
+}
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-clear').classList.remove('visible');
+  document.getElementById('search-results').classList.remove('open');
+  document.getElementById('search-input').focus();
 }
 
 // ── DARK MODE ──────────────────────────────────────────────────────────────
@@ -440,6 +560,7 @@ document.addEventListener('keydown', function(e) {
 
 // ── INIT ───────────────────────────────────────────────────────────────────
 renderBookList();
+setupSearch();
 loadLexicon();
 </script>
 </body>
